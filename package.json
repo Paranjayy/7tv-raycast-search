@@ -4,8 +4,8 @@
   "version": "1.0.0",
   "title": "7TV Emotes Search Pro",
   "description": "High-fidelity 7TV discovery and direct drop.",
-  "icon": "icon.svg",
-  "author": "Vault",
+  "icon": "icon.png",
+  "author": "Paranjayy",
   "license": "MIT",
   "commands": [
     {
