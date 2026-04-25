@@ -1,6 +1,9 @@
-import { List, Grid, ActionPanel, Action, Icon, showToast, Toast, Image } from "@raycast/api";
+import { List, Grid, ActionPanel, Action, Icon, showToast, Toast, Image, Clipboard } from "@raycast/api";
 import { useState, useEffect } from "react";
 import fetch from "node-fetch";
+import { writeFile } from "fs/promises";
+import { join } from "path";
+import { tmpdir } from "os";
 
 interface Emote {
   id: string;
@@ -8,12 +11,11 @@ interface Emote {
   owner?: {
     display_name: string;
   };
-  data: {
-    host: {
-      url: string;
-      files: { name: string; static_name: string; width: number; height: number }[];
-    };
+  host: {
+    url: string;
+    files: { name: string; static_name: string; width: number; height: number; format: string }[];
   };
+  animated?: boolean;
 }
 
 export default function Command() {
@@ -21,6 +23,10 @@ export default function Command() {
   const [items, setItems] = useState<Emote[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [isGridView, setIsGridView] = useState(true);
+  
+  const [sortValue, setSortValue] = useState<string>("popularity"); 
+  const [sortOrder, setSortOrder] = useState<string>("DESCENDING");
+  const [category, setCategory] = useState<string>("TOP");
 
   useEffect(() => {
     async function fetchEmotes() {
@@ -28,28 +34,26 @@ export default function Command() {
       
       setIsLoading(true);
       try {
-        // Switching to GraphQL (GQL) which is the official and most stable v3 search method
-        // This avoids the 'invalid id' error that occurs on some GET endpoints
         const gqlQuery = {
           query: `
-            query SearchEmotes($query: String!, $page: Int, $limit: Int) {
-              emotes(query: $query, page: $page, limit: $limit, sort: "TOP") {
+            query SearchEmotes($query: String!, $page: Int, $limit: Int, $sort: Sort, $filter: EmoteSearchFilter) {
+              emotes(query: $query, page: $page, limit: $limit, sort: $sort, filter: $filter) {
                 count
                 items {
                   id
                   name
+                  animated
                   owner {
                     display_name
                   }
-                  data {
-                    host {
-                      url
-                      files {
-                        name
-                        static_name
-                        width
-                        height
-                      }
+                  host {
+                    url
+                    files {
+                      name
+                      static_name
+                      width
+                      height
+                      format
                     }
                   }
                 }
@@ -57,9 +61,19 @@ export default function Command() {
             }
           `,
           variables: {
-            query: query || "", // Empty query for trending/top
+            query: query || "",
             page: 1,
-            limit: 50
+            limit: 60,
+            sort: {
+              value: sortValue,
+              order: sortOrder
+            },
+            filter: {
+              category: category,
+              exact_match: false,
+              animated: null,
+              zero_width: false
+            }
           }
         };
 
@@ -99,7 +113,65 @@ export default function Command() {
     }, 400);
 
     return () => clearTimeout(delayDebounceFn);
-  }, [searchText]);
+  }, [searchText, sortValue, sortOrder, category]);
+
+  const getEmoteUrl = (item: Emote, size: "1x" | "2x" | "4x" = "4x") => {
+    const hostUrl = item.host.url;
+    return `https:${hostUrl}/${size}.webp`;
+  };
+
+  async function handleDropEmote(item: Emote, mode: "smart" | "url" | "bruteforce" = "smart") {
+    const url = getEmoteUrl(item, "4x");
+    
+    if (mode === "url") {
+        await Clipboard.paste(url);
+        await showToast({ title: "URL Pasted" });
+        return;
+    }
+
+    const toast = await showToast({ style: Toast.Style.Animated, title: mode === "bruteforce" ? "🔥 Bruteforcing..." : "Processing Emote..." });
+    try {
+        const res = await fetch(url);
+        if (!res.ok) throw new Error("Download failed");
+        
+        const arrayBuffer = await res.arrayBuffer();
+        const buffer = Buffer.from(arrayBuffer);
+        
+        // Sanitize name to prevent "Invalid clipboard content" errors from weird characters
+        const safeName = item.name.replace(/[^a-z0-9]/gi, '_').toLowerCase();
+        const tempPath = join(tmpdir(), `vault_${safeName}_${item.id}.webp`);
+        await writeFile(tempPath, buffer);
+        
+        // Attempt Copy/Paste
+        try {
+            await Clipboard.copy({ 
+                path: tempPath,
+                html: `<img src="${url}" alt="${item.name}" />`
+            });
+            
+            if (mode === "bruteforce") {
+                // In bruteforce mode, we attempt both copy and multiple paste triggers
+                await Clipboard.paste();
+                await Clipboard.paste({ path: tempPath });
+            } else {
+                await Clipboard.paste();
+            }
+            
+            toast.style = Toast.Style.Success;
+            toast.title = mode === "bruteforce" ? "Emote Bruteforced!" : "Emote Dropped!";
+        } catch (clipError) {
+            console.error("Drop failed:", clipError);
+            await Clipboard.paste(url);
+            toast.style = Toast.Style.Success;
+            toast.title = "URL Pasted (Fallback)";
+        }
+    } catch (e) {
+        console.error("Critical Error:", e);
+        await Clipboard.paste(url);
+        toast.style = Toast.Style.Success;
+        toast.title = "URL Pasted (Error Fallback)";
+    }
+  }
 
   const toggleViewAction = (
     <Action
@@ -110,18 +182,86 @@ export default function Command() {
     />
   );
 
-  const renderActions = (item: Emote, emoteUrl: string) => (
-    <ActionPanel>
-      <ActionPanel.Section>
-        <Action.CopyToClipboard title="Copy Emote URL" content={emoteUrl} />
-        <Action.Paste title="Paste Emote URL" content={emoteUrl} />
-      </ActionPanel.Section>
-      <ActionPanel.Section>
-        <Action.OpenInBrowser title="View on 7TV" url={`https://7tv.app/emotes/${item.id}`} />
-        {toggleViewAction}
-        <Action.CopyToClipboard title="Copy ID" content={item.id} shortcut={{ modifiers: ["cmd", "shift"], key: "i" }} />
-      </ActionPanel.Section>
-    </ActionPanel>
+  const renderActions = (item: Emote) => {
+    const highResUrl = getEmoteUrl(item, "4x");
+    const markdown = `![${item.name}](${highResUrl})`;
+
+    return (
+      <ActionPanel>
+        <ActionPanel.Section>
+          {/* Primary Action: Enter -> Smart Drop */}
+          <Action title="Drop Emote" icon={Icon.ChevronRight} onAction={() => handleDropEmote(item, "smart")} />
+          
+          {/* Bruteforce: Cmd+Shift+Enter -> Deep Drop */}
+          <Action 
+            title="Bruteforce Drop" 
+            icon={Icon.Bolt} 
+            onAction={() => handleDropEmote(item, "bruteforce")} 
+            shortcut={{ modifiers: ["cmd", "shift"], key: "enter" }}
+          />
+
+          {/* Force URL: Cmd+Enter */}
+          <Action 
+            title="Force Paste URL" 
+            icon={Icon.Link} 
+            onAction={() => handleDropEmote(item, "url")} 
+            shortcut={{ modifiers: ["cmd"], key: "enter" }}
+          />
+        </ActionPanel.Section>
+
+        <ActionPanel.Section>
+          <Action.CopyToClipboard title="Copy Emote URL" content={highResUrl} />
+          <Action.CopyToClipboard title="Copy as Markdown" content={markdown} shortcut={{ modifiers: ["cmd"], key: "m" }} />
+          <Action 
+            title="Copy Emote File" 
+            icon={Icon.Download}
+            onAction={async () => {
+                const res = await fetch(highResUrl);
+                const buffer = Buffer.from(await res.arrayBuffer());
+                const safeName = item.name.replace(/[^a-z0-9]/gi, '_').toLowerCase();
+                const tempPath = join(tmpdir(), `copy_${safeName}.webp`);
+                await writeFile(tempPath, buffer);
+                await Clipboard.copy({ path: tempPath });
+                await showToast({ title: "File Copied", message: "Ready to paste (Cmd+V)" });
+            }}
+          />
+        </ActionPanel.Section>
+        <ActionPanel.Section>
+          <Action.OpenInBrowser title="View on 7TV" url={`https://7tv.app/emotes/${item.id}`} />
+          {toggleViewAction}
+          <Action.CopyToClipboard title="Copy ID" content={item.id} shortcut={{ modifiers: ["cmd", "shift"], key: "i" }} />
+        </ActionPanel.Section>
+        <ActionPanel.Section>
+          <Action.OpenInBrowser 
+            title="Download Emote (High Res)" 
+            url={highResUrl} 
+            icon={Icon.Download}
+            shortcut={{ modifiers: ["cmd", "shift"], key: "d" }} 
+          />
+        </ActionPanel.Section>
+      </ActionPanel>
+    );
+  };
+
+  const accessory = (
+    <List.Dropdown tooltip="Sort & Filter" storeValue={true} onChange={(val) => {
+        const [cat, sortVal, order] = val.split(":");
+        setCategory(cat);
+        setSortValue(sortVal);
+        setSortOrder(order);
+    }}>
+      <List.Dropdown.Section title="Top Emotes">
+        <List.Dropdown.Item title="Popular (All Time)" value="TOP:popularity:DESCENDING" />
+        <List.Dropdown.Item title="Recently Created" value="TOP:created_at:DESCENDING" />
+      </List.Dropdown.Section>
+      <List.Dropdown.Section title="Trending">
+        <List.Dropdown.Item title="Trending Right Now" value="TRENDING:popularity:DESCENDING" />
+      </List.Dropdown.Section>
+      <List.Dropdown.Section title="Alphabetical">
+        <List.Dropdown.Item title="Name (A-Z)" value="TOP:name:ASCENDING" />
+        <List.Dropdown.Item title="Name (Z-A)" value="TOP:name:DESCENDING" />
+      </List.Dropdown.Section>
+    </List.Dropdown>
   );
 
   if (isGridView) {
@@ -129,24 +269,21 @@ export default function Command() {
       <Grid
         isLoading={isLoading}
         onSearchTextChange={setSearchText}
-        searchBarPlaceholder="Search 7TV Emotes (Grid Mode)..."
+        searchBarPlaceholder="Search 7TV Emotes..."
+        searchBarAccessory={accessory}
         columns={6}
         fit={Grid.Fit.Contain}
       >
-        <Grid.Section title={searchText ? `Results for "${searchText}"` : "Top Emotes"}>
-          {items.map((item) => {
-            const hostUrl = item.data.host.url;
-            const emoteUrl = `https:${hostUrl}/2x.webp`;
-            return (
-              <Grid.Item
-                key={item.id}
-                title={item.name}
-                subtitle={item.owner?.display_name}
-                content={{ source: emoteUrl }}
-                actions={renderActions(item, emoteUrl)}
-              />
-            );
-          })}
+        <Grid.Section title={`${category} Results`}>
+          {items.map((item) => (
+            <Grid.Item
+              key={item.id}
+              title={item.name}
+              subtitle={item.owner?.display_name}
+              content={{ source: getEmoteUrl(item, "2x") }}
+              actions={renderActions(item)}
+            />
+          ))}
         </Grid.Section>
       </Grid>
     );
@@ -156,23 +293,20 @@ export default function Command() {
     <List
       isLoading={isLoading}
       onSearchTextChange={setSearchText}
-      searchBarPlaceholder="Search 7TV Emotes (List Mode)..."
+      searchBarPlaceholder="Search 7TV Emotes..."
+      searchBarAccessory={accessory}
       throttle
     >
-      <List.Section title={searchText ? `Results for "${searchText}"` : "Top Emotes"}>
-        {items.map((item) => {
-          const hostUrl = item.data.host.url;
-          const emoteUrl = `https:${hostUrl}/2x.webp`;
-          return (
-            <List.Item
-              key={item.id}
-              title={item.name}
-              subtitle={item.owner?.display_name || "Community"}
-              icon={{ source: emoteUrl, mask: Image.Mask.RoundedRect }}
-              actions={renderActions(item, emoteUrl)}
-            />
-          );
-        })}
+      <List.Section title={`${category} Results`}>
+        {items.map((item) => (
+          <List.Item
+            key={item.id}
+            title={item.name}
+            subtitle={item.owner?.display_name || "Community"}
+            icon={{ source: getEmoteUrl(item, "1x"), mask: Image.Mask.RoundedRect }}
+            actions={renderActions(item)}
+          />
+        ))}
       </List.Section>
     </List>
   );

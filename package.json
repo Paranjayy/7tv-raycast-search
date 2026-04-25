@@ -2,10 +2,10 @@
   "$schema": "https://www.raycast.com/schemas/extension.json",
   "name": "seventv-search",
   "version": "1.0.0",
-  "title": "7TV Emotes",
-  "description": "Search and copy 7TV emotes",
+  "title": "7TV Emotes Search Pro",
+  "description": "High-fidelity 7TV discovery and direct drop.",
   "icon": "icon.svg",
-  "author": "antigravity",
+  "author": "Vault",
   "license": "MIT",
   "commands": [
     {
