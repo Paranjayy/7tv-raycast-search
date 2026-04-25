@@ -63,7 +63,11 @@ export default function Command() {
   useEffect(() => {
     async function fetchEmotes() {
       const query = searchText.trim();
-      if (!query && !category.startsWith("TRENDING")) {
+      if (
+        !query &&
+        !category.startsWith("TRENDING") &&
+        !category.startsWith("TOP")
+      ) {
         setItems([]);
         setIsLoading(false);
         return;
